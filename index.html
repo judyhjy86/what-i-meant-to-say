@@ -201,6 +201,7 @@ a:hover { color: #B8D5FF; text-decoration: underline; }
 .thought.is-struck p { text-decoration: line-through; text-decoration-thickness: 2px; text-decoration-color: var(--faint); }
 .thought.is-plain p { color: var(--text); }
 .thought.is-blue p { color: var(--blue); }
+.thought.is-feel p { color: var(--soft); font-style: italic; letter-spacing: 0.01em; }
 
 .tip { margin: 0 0 18px; padding: 10px 14px; border-radius: 10px; background: var(--amber-ground); border: 1px solid #5C4630; color: var(--amber-text); font-size: 15px; }
 
@@ -241,7 +242,7 @@ a:hover { color: #B8D5FF; text-decoration: underline; }
 .tile.placed.k-velen { background: var(--blue-ground); }
 .tile.placed.k-gesture { background: transparent; }
 .tile.drag-src { opacity: 0.35; }
-.tile.ghost { position: fixed; z-index: 1000; pointer-events: none; transform: translate(-50%, -50%) rotate(-2deg); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.tile.ghost { position: fixed; left: 0; top: 0; z-index: 1000; pointer-events: none; will-change: transform; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 
 .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 10px; }
 .option { min-height: 60px; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--edge); background: var(--panel-2); color: var(--text); text-align: left; cursor: pointer; font: 500 16px var(--sans); display: flex; flex-direction: column; gap: 4px; }
@@ -372,7 +373,7 @@ html.endscreen #story { margin-left: 0; }
 
 	Setting.addToggle('relaxed', {
 		label: 'Relaxed timing: every timed moment lasts twice as long.',
-		default: false
+		default: true
 	});
 
 	/* ---------- helpers ---------- */
@@ -654,7 +655,7 @@ html.endscreen #story { margin-left: 0; }
 	/* ---------- reacting to what the player actually said ---------- */
 
 	function saidWords() {
-		return (vars().said || []).filter(function (t) { return t.kind !== 'punct'; })
+		return (vars().said || []).filter(function (t) { return t.kind !== 'punct' && t.kind !== 'gesture'; })
 			.map(function (t) { return norm(t.kind === 'velen' ? t.sent : t.label); });
 	}
 
@@ -664,6 +665,9 @@ html.endscreen #story { margin-left: 0; }
 		var want = Array.prototype.slice.call(arguments).map(norm);
 		return said.some(function (pair) { return want.indexOf(pair[0]) !== -1 || want.indexOf(pair[1]) !== -1; });
 	};
+
+	/* setup.saidCount() is how many words (not gestures or punctuation) the player just said. */
+	setup.saidCount = function () { return saidWords().length; };
 
 	/* A word counts as negated when "don't", "not", "no" or "nem" comes before it
 	   ("I don't want to stay"), except in "don't know". */
@@ -710,6 +714,9 @@ html.endscreen #story { margin-left: 0; }
 				var $b = $('<button type="button" class="vw known"></button>').text(v);
 				$b.data({ v: v, en: en, key: norm(v) });
 				$b.attr('aria-label', v + ', click to see it in English');
+				if ((vars().clicked || []).indexOf(norm(v)) !== -1) {
+					$b.addClass('open seen').text(en).attr('aria-label', v + ' means ' + en);
+				}
 				$b.on('mousedown pointerdown', function (e) { e.preventDefault(); });
 				$b.on('click', function () {
 					var open = !$b.hasClass('open');
@@ -720,6 +727,8 @@ html.endscreen #story { margin-left: 0; }
 						$x.toggleClass('open', open).addClass('seen').text(open ? $x.data('en') : $x.data('v'));
 						$x.attr('aria-label', open ? $x.data('v') + ' means ' + $x.data('en') : $x.data('v') + ', click to see it in English');
 					});
+					var clicked = vars().clicked || (vars().clicked = []);
+					if (clicked.indexOf($b.data('key')) === -1) { clicked.push($b.data('key')); }
 					$b.trigger('wims:seen');
 				});
 				$b.appendTo(this.output);
@@ -762,7 +771,7 @@ html.endscreen #story { margin-left: 0; }
 		handler: function () {
 			var mode = this.args[0] || 'struck';
 			var $t = $('<section class="thought"></section>').addClass('is-' + mode);
-			$('<div class="label"></div>').text(mode === 'blue' ? 'You think, in Velen' : 'You think').appendTo($t);
+			$('<div class="label"></div>').text(mode === 'blue' ? 'You think, in Velen' : mode === 'feel' ? 'You feel' : 'You think').appendTo($t);
 			var $p = $('<p></p>').wiki(fillPlaceholders(this.payload[0].contents)).appendTo($t);
 			$t.addClass('pending').appendTo(this.output);
 			W.queue.push({ $el: $t, pre: 400, hold: clamp($p.text().length * PACE.narrPerChar, PACE.narrMin, PACE.narrMax), dots: false });
@@ -850,6 +859,11 @@ html.endscreen #story { margin-left: 0; }
 				t.sent = t.sent.replace(/\*$/, '');
 				if (!isKnown(t.sent)) { return; }
 			}
+			var key = norm(t.sent);
+			var k = vars().known || (vars().known = []);
+			if (k.indexOf(key) === -1) { k.push(key); }
+			var mm = vars().meanings || (vars().meanings = {});
+			if (!mm[key] && key !== norm(t.label)) { mm[key] = t.label; }
 			out.push(t);
 		});
 		splitList(gestures).forEach(function (g) {
@@ -889,41 +903,52 @@ html.endscreen #story { margin-left: 0; }
 		el.addEventListener('pointerdown', function (e) {
 			if (e.button !== 0) { return; }
 			e.preventDefault();
+			try { el.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
 			var sx = e.clientX;
 			var sy = e.clientY;
+			var x = sx;
+			var y = sy;
 			var dragging = false;
 			var ghost = null;
+			var frame = null;
+			var $box = $('.box');
+			function paint() {
+				frame = null;
+				if (!ghost) { return; }
+				ghost.style.transform = 'translate3d(' + x + 'px,' + y + 'px,0) translate(-50%,-50%) rotate(-2deg)';
+				var over = document.elementFromPoint(x, y);
+				$box.toggleClass('over', !!(over && over.closest && over.closest('.box')));
+			}
 			function move(ev) {
-				if (!dragging && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) {
+				x = ev.clientX;
+				y = ev.clientY;
+				if (!dragging && Math.hypot(x - sx, y - sy) > 4) {
 					dragging = true;
 					ghost = el.cloneNode(true);
 					ghost.classList.add('ghost');
 					document.body.appendChild(ghost);
 					el.classList.add('drag-src');
 				}
-				if (dragging) {
-					ghost.style.left = ev.clientX + 'px';
-					ghost.style.top = ev.clientY + 'px';
-					var over = document.elementFromPoint(ev.clientX, ev.clientY);
-					$('.box').toggleClass('over', !!(over && over.closest && over.closest('.box')));
-				}
+				if (dragging && !frame) { frame = requestAnimationFrame(paint); }
 			}
 			function up(ev) {
-				window.removeEventListener('pointermove', move);
-				window.removeEventListener('pointerup', up);
-				window.removeEventListener('pointercancel', up);
+				el.removeEventListener('pointermove', move);
+				el.removeEventListener('pointerup', up);
+				el.removeEventListener('pointercancel', up);
+				if (frame) { cancelAnimationFrame(frame); frame = null; }
 				if (dragging) {
 					ghost.remove();
+					ghost = null;
 					el.classList.remove('drag-src');
-					$('.box').removeClass('over');
+					$box.removeClass('over');
 					dragState.justDragged = true;
 					setTimeout(function () { dragState.justDragged = false; }, 50);
 					onDrop(ev.clientX, ev.clientY);
 				}
 			}
-			window.addEventListener('pointermove', move);
-			window.addEventListener('pointerup', up);
-			window.addEventListener('pointercancel', up);
+			el.addEventListener('pointermove', move);
+			el.addEventListener('pointerup', up);
+			el.addEventListener('pointercancel', up);
 		});
 		el.addEventListener('click', function () {
 			if (dragState.justDragged) { return; }
@@ -1127,7 +1152,6 @@ html.endscreen #story { margin-left: 0; }
 				$b.on('click', function () { go(o.target, o.key); });
 				$b.appendTo($grid);
 			});
-			$('<p class="keyhint"></p>').text('Press 1–' + options.length + ' to choose.').appendTo($panel);
 
 			if (timer) {
 				runTimer(count, timer, function () { if (silenceTarget) { go(silenceTarget, 'silence'); } });
@@ -1536,6 +1560,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;set $uncleJab to false&gt;&gt;
 &lt;&lt;set $known to [&quot;sa&quot;, &quot;nem&quot;, &quot;kiva&quot;, &quot;ke&quot;, &quot;lo&quot;, &quot;tu&quot;, &quot;toli&quot;]&gt;&gt;
 &lt;&lt;set $picks to {}&gt;&gt;
+&lt;&lt;set $clicked to []&gt;&gt;
 &lt;&lt;set $said to []&gt;&gt;
 &lt;&lt;set $earlyQ to false&gt;&gt;</tw-passagedata><tw-passagedata pid="2" name="StoryMenu" tags="" position="350,100" size="100,100">&lt;&lt;phrasebooktoggle&gt;&gt;
 &lt;&lt;musictoggle&gt;&gt;</tw-passagedata><tw-passagedata pid="3" name="StoryCaption" tags="" position="600,100" size="100,100">&lt;&lt;yearcaption&gt;&gt;</tw-passagedata><tw-passagedata pid="4" name="Start" tags="title" position="850,100" size="100,100">&lt;div class=&quot;title-screen&quot;&gt;
@@ -1543,14 +1568,13 @@ html.endscreen #story { margin-left: 0; }
 &lt;p class=&quot;lede&quot;&gt;Four years at a university abroad, in four short scenes. Everyone there speaks Velen, an invented language. Your own first language appears as English.&lt;/p&gt;
 &lt;label for=&quot;textbox-name&quot;&gt;What should people call you?&lt;/label&gt;
 &lt;&lt;textbox &quot;$name&quot; $name&gt;&gt;
-&lt;label for=&quot;textbox-home&quot;&gt;Where are you from?&lt;/label&gt;
-&lt;&lt;textbox &quot;$home&quot; $home&gt;&gt;
 &lt;label for=&quot;textbox-pronouns&quot;&gt;Your pronouns&lt;/label&gt;
 &lt;&lt;textbox &quot;$pronouns&quot; $pronouns&gt;&gt;
 &lt;p class=&quot;note&quot;&gt;Write them however you like, for example she/her, he/him, they/them, or xe/xem.&lt;/p&gt;
-&lt;p class=&quot;note&quot;&gt;When people talk, you’ll see what you want to say, and the handful of words you actually have. Tap or drag them into a sentence. On timed moments, whatever you’ve built is said when time runs out. You can turn on relaxed timing in Settings.&lt;/p&gt;
+&lt;p class=&quot;note&quot;&gt;You’re from Ostra. When people talk, you’ll see what’s going on inside your head, and the handful of words you actually have. Tap or drag them into the box, then press Say it, or Enter. On timed moments, whatever you’ve built is said when time runs out.&lt;/p&gt;
+&lt;p class=&quot;note&quot;&gt;In Settings you can turn on a Phrasebook of every Velen word you know (it starts off), and change relaxed timing (it starts on).&lt;/p&gt;
 &lt;p class=&quot;note&quot;&gt;There’s quiet background music. You can turn it off in the sidebar, or change the volume in Settings.&lt;/p&gt;
-&lt;p class=&quot;note&quot;&gt;Content note: microaggressions, being left out and spoken over, homesickness, and timed pressure that is meant to feel uncomfortable.&lt;/p&gt;
+&lt;p class=&quot;note&quot;&gt;Content note: the story includes microaggressions, being left out and spoken over, and homesickness. Some moments are timed on purpose. The pressure is meant to feel uncomfortable, and running out of time is part of the story, not a failure.&lt;/p&gt;
 &lt;&lt;proceed &quot;Year 1&quot; &quot;Begin&quot;&gt;&gt;
 &lt;/div&gt;</tw-passagedata><tw-passagedata pid="5" name="Year 1" tags="y1 interlude" position="100,1000" size="100,100">&lt;div class=&quot;interlude&quot;&gt;
 &lt;p class=&quot;yearword&quot;&gt;Freshman&lt;/p&gt;
@@ -1558,13 +1582,12 @@ html.endscreen #story { margin-left: 0; }
 &lt;p&gt;It’s orientation week. You’ve been in the country four days. Everyone around you speaks Velen, and you know about seven words of it.&lt;/p&gt;
 &lt;&lt;proceed &quot;F1&quot; &quot;Start walking&quot;&gt;&gt;
 &lt;/div&gt;</tw-passagedata><tw-passagedata pid="6" name="F1" tags="y1 card" position="350,1000" size="100,100">&lt;&lt;card &quot;F1&quot; &quot;Introductions&quot;&gt;&gt;
+&lt;&lt;tip&gt;&gt;How to play: click an underlined word you know to see it in English. Words you don’t know stay in Velen. Then tap or drag words into the box and press Say it, or Enter. This card has no timer. From the next one on, whatever is in the box is said when time runs out.&lt;&lt;/tip&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Your orientation leader, Jay, is walking a group of new students to Vesh Burger.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Jay&quot;&gt;&gt;“Okei okei! Dumo velak Vesh Burger, ama ama! Twenti-faiv minuta, &lt;&lt;w &quot;brask&quot; &quot;awesome&quot;&gt;&gt;?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The group cheers. A girl falls into step beside you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Teri&quot;&gt;&gt;“&lt;&lt;w &quot;Lo&quot; &quot;I&quot;&gt;&gt; Teri! &lt;&lt;w &quot;Tu&quot; &quot;You&quot;&gt;&gt;? &lt;&lt;w &quot;Ke&quot; &quot;What&quot;&gt;&gt; &lt;&lt;w &quot;tu&quot; &quot;you&quot;&gt;&gt; vasheni?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;tip&gt;&gt;Click a word you know to see it in English. Words you don’t know stay in Velen.&lt;&lt;/tip&gt;&gt;
-&lt;&lt;thought &quot;struck&quot;&gt;&gt;Hi, I’m @name. I’m from @home. I landed four days ago and I’m still jet-lagged.&lt;&lt;/thought&gt;&gt;
-&lt;&lt;tip&gt;&gt;Tap or drag words into the box. Take your time here. From the next card on, a timer says whatever is in the box when it runs out.&lt;&lt;/tip&gt;&gt;
+&lt;&lt;thought &quot;feel&quot;&gt;&gt;jet-lagged · nervous · hoping to make a friend&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 0&gt;&gt;
 &lt;&lt;bank &quot;lo, @name, @home, sa, nem, kiva, ke?, tu, toli&quot; &quot;smile and nod&quot;&gt;&gt;
 &lt;&lt;atleast 1&gt;&gt;F1 Spoke
@@ -1579,7 +1602,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;line &quot;Marcus&quot;&gt;&gt;“Osh ramo velin, &lt;&lt;w &quot;lo&quot; &quot;I&quot;&gt;&gt; fenda &lt;&lt;w &quot;tu&quot; &quot;you&quot;&gt;&gt; dorma, nofa nofa &lt;&lt;w &quot;kiva&quot; &quot;good&quot;&gt;&gt;!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;line &quot;Everyone&quot;&gt;&gt;“Nofa! &lt;&lt;w &quot;Brask&quot; &quot;Awesome&quot;&gt;&gt;, &lt;&lt;w &quot;brask&quot; &quot;awesome&quot;&gt;&gt;, BRASK!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;line &quot;Teri&quot;&gt;&gt;“Brask-a velen &lt;&lt;w &quot;tu&quot; &quot;you&quot;&gt;&gt; marosh, ha!”&lt;&lt;/line&gt;&gt;
-&lt;&lt;thought &quot;struck&quot;&gt;&gt;I have no idea what’s funny, but I want to be laughing with them.&lt;&lt;/thought&gt;&gt;
+&lt;&lt;thought &quot;feel&quot;&gt;&gt;lost · left out · wanting to laugh along&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 10&gt;&gt;
 &lt;&lt;bank &quot;sa, nem, kiva, ke?, lo, tu, toli&quot; &quot;laugh, smile and nod&quot;&gt;&gt;
 &lt;&lt;when &quot;ke?&quot;&gt;&gt;F2 Ask
@@ -1604,7 +1627,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;narrate&gt;&gt;The group is arguing about something. Teri turns around and points at you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Teri&quot;&gt;&gt;“&lt;&lt;w &quot;Tu&quot; &quot;You&quot;&gt;&gt;! &lt;&lt;w &quot;Ke&quot; &quot;What&quot;&gt;&gt; &lt;&lt;w &quot;tu&quot; &quot;you&quot;&gt;&gt; menda? Dorma ama, &lt;&lt;w &quot;kiva&quot; &quot;good&quot;&gt;&gt; o &lt;&lt;w &quot;nem&quot; &quot;no&quot;&gt;&gt;?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You catch “food” from her gesture, and good or no.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;thought &quot;struck&quot;&gt;&gt;The dorm food is fine, honestly. But I miss my mom’s cooking so much that everything here tastes like nothing.&lt;&lt;/thought&gt;&gt;
+&lt;&lt;thought &quot;feel&quot;&gt;&gt;put on the spot · homesick · unsure&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 10&gt;&gt;
 &lt;&lt;bank &quot;sa, nem, kiva, ke?, lo, tu, toli, brask*&quot; &quot;shrug&quot;&gt;&gt;
 &lt;&lt;negated &quot;kiva&quot;&gt;&gt;F3 Nem
@@ -1627,7 +1650,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;line &quot;Teri&quot;&gt;&gt;“Dobla Vesh, frelo-style, extra mosh!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;There’s a long line behind you. The fryer hisses.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cashier&quot;&gt;&gt;“&lt;&lt;w &quot;Ke&quot; &quot;What&quot;&gt;&gt; &lt;&lt;w &quot;tu&quot; &quot;you&quot;&gt;&gt; fen? Dobla, frelo, mosh, o…?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;thought &quot;struck&quot;&gt;&gt;I just want a plain burger and fries, please.&lt;&lt;/thought&gt;&gt;
+&lt;&lt;thought &quot;feel&quot;&gt;&gt;rushed · hungry · out of words&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 10&gt;&gt;
 &lt;&lt;bank &quot;sa, nem, kiva, ke?, lo, tu, toli, brask*&quot; &quot;point at Teri, point at the menu&quot;&gt;&gt;
 &lt;&lt;when &quot;toli&quot; &quot;point at Teri&quot;&gt;&gt;F4 Same
@@ -1648,7 +1671,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;narrate&gt;&gt;She orders for you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;include &quot;F4 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="25" name="F4 Other" tags="y1" position="1100,1625" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The cashier waits, then nods at Teri’s tray and punches something in.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;F4 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="26" name="F4 After" tags="" position="1100,1750" size="100,100">&lt;&lt;narrate&gt;&gt;Every way of ordering gets you the same thing: a burger covered in something orange.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;include &quot;F4 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="26" name="F4 After" tags="" position="1100,1750" size="100,100">&lt;&lt;narrate&gt;&gt;Every way of ordering gets you the same thing: a burger covered in something orange. You take a bite. It’s spicy, the kind you can’t eat. You eat it anyway.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;proceed &quot;F-End&quot; &quot;Walk back&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="27" name="F-End" tags="y1 card" position="1350,1000" size="100,100">&lt;&lt;card &quot;F-End&quot; &quot;The Walk Back&quot;&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The walk back is slower, and it’s dark out. Teri walks beside you. She holds up her orange burger, then points at yours, and says it slowly, just for you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Teri&quot; &quot;slow&quot;&gt;&gt;“&lt;&lt;w &quot;Tu&quot; &quot;You&quot;&gt;&gt;, &lt;&lt;w &quot;lo&quot; &quot;me&quot;&gt;&gt;… &lt;&lt;w &quot;toli&quot; &quot;same&quot;&gt;&gt;. &lt;&lt;w &quot;Kiva&quot; &quot;Good&quot;&gt;&gt;?”&lt;&lt;/line&gt;&gt;
@@ -1682,6 +1705,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;narrate&gt;&gt;You think: Now I know. But we’re talking about the word now, not the book.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;proceed &quot;S1b&quot; &quot;Find a seat&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="33" name="S1 Slip" tags="y2" position="350,2275" size="100,100">&lt;&lt;line &quot;Priya&quot; &quot;blue&quot;&gt;&gt;“Right? Which part made you &lt;&lt;w &quot;grenna&quot;&gt;&gt;?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Now I have to answer a question built on a word I don’t know.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;The professor walks in before you have to. You’re relieved, and then you’re not.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;proceed &quot;S1b&quot; &quot;Find a seat&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="34" name="S1 Silent" tags="y2" position="350,2400" size="100,100">&lt;&lt;line &quot;Priya&quot; &quot;blue&quot;&gt;&gt;“…Anyway, see you in there.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;proceed &quot;S1b&quot; &quot;Find a seat&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="35" name="S1b" tags="y2 card" position="600,1900" size="100,100">&lt;&lt;card &quot;S1b&quot; &quot;The Word&quot;&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Ferro wrote the second half in exile, so you can read the whole book as an &lt;&lt;w &quot;orvelle&quot;&gt;&gt; for the city she left. Does that reading work for you?”&lt;&lt;/line&gt;&gt;
@@ -1697,8 +1721,9 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;narrate&gt;&gt;You think: She’s being nice about it. That’s almost worse.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;proceed &quot;S2&quot; &quot;Keep listening&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="37" name="S1b Ask" tags="y2" position="600,2150" size="100,100">&lt;&lt;learn &quot;orvelle&quot; &quot;a poem of mourning&quot; &quot;quiet&quot;&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Good question. It’s a poem of mourning, for something you’ve lost. So, does it work for you?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;narrate&gt;&gt;Two people glance at the clock.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;narrate&gt;&gt;You think: Now I understand. And now everyone is waiting for my answer.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;Two people glance at the clock. You manage, “Yes. It works. Because… memory.”&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Mm, good.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;She turns to someone else. You think: Now I understand. A minute too late.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;proceed &quot;S2&quot; &quot;Keep listening&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="38" name="S1b Slip" tags="y2" position="600,2275" size="100,100">&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Great.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;She moves on. In the next ten minutes, &lt;&lt;w &quot;orvelle&quot;&gt;&gt; comes up four more times.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Every time, I fall a little further behind.&lt;&lt;/narrate&gt;&gt;
@@ -1738,49 +1763,74 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Oh, that’s a nice connection. Say more?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You can’t, not fast enough. “Just… connection.”&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Okay! Good.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;S4&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="48" name="S3 Same" tags="y2" position="1100,2150" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;S3b&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="48" name="S3 Same" tags="y2" position="1100,2150" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;A classmate smirks.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Mm, sure.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;S4&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="49" name="S3 Silent" tags="y2" position="1100,2275" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;S3b&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="49" name="S3 Silent" tags="y2" position="1100,2275" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The discussion moves on without you.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;S4&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="50" name="S4" tags="y2 card" position="1350,1900" size="100,100">&lt;&lt;card &quot;S4&quot; &quot;After Class&quot;&gt;&gt;
-&lt;&lt;narrate&gt;&gt;The professor stops you at the door.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;S3b&quot; &quot;Class ends&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="50" name="S3b" tags="y2 card" position="1350,1900" size="100,100">&lt;&lt;card &quot;S3b&quot; &quot;Before She Goes&quot;&gt;&gt;
+&lt;&lt;narrate&gt;&gt;Class ends. You go up to the front to finish your thought. The professor is already packing her bag.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Oh, the mirror person! Quick, I have another class across campus. Go.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;thought &quot;struck&quot;&gt;&gt;It connects to the mirror scene in chapter two. She can’t recognize herself there either. The book was building to this the whole time.&lt;&lt;/thought&gt;&gt;
+&lt;&lt;speak 5&gt;&gt;
+&lt;&lt;bank &quot;the, mirror, chapter, two, she, can’t, see, herself, also, same, book, building, to, this, end, I, think&quot; &quot;&quot;&gt;&gt;
+&lt;&lt;when &quot;mirror&quot; &quot;chapter&quot; &quot;herself&quot;&gt;&gt;S3b Mirror
+&lt;&lt;atleast 1&gt;&gt;S3b Other
+&lt;&lt;silence&gt;&gt;S3b Silent
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="51" name="S3b Mirror" tags="y2" position="1350,2025" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;if setup.saidCount() gte 6&gt;&gt;
+&lt;&lt;narrate&gt;&gt;She stops, one arm in her coat.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Oh, that’s good. The mirror. Put that in your paper.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;She’s out the door before you can answer, but she said it.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: She heard me. For once, the sentence got there.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;else&gt;&gt;
+&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“The mirror, yes, good. Sorry, I’m late. Email me?”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;She’s gone. You think: Half of it got through.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;/if&gt;&gt;
+&lt;&lt;proceed &quot;S4&quot; &quot;Next week&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="52" name="S3b Other" tags="y2" position="1350,2150" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Mm-hm. Sorry, I really have to run.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;The door swings shut behind her. You think: That wasn’t even the part I meant.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;S4&quot; &quot;Next week&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="53" name="S3b Silent" tags="y2" position="1350,2275" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;narrate&gt;&gt;By the time your sentence is ready, she’s gone.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: Next time.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;S4&quot; &quot;Next week&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="54" name="S4" tags="y2 card" position="1600,1900" size="100,100">&lt;&lt;card &quot;S4&quot; &quot;After Class&quot;&gt;&gt;
+&lt;&lt;narrate&gt;&gt;The next week, the professor stops you at the door.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Hey, I’d love to hear from you more in discussion. You’re always taking so many notes.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;thought &quot;struck&quot;&gt;&gt;I want to talk. I think fast, but I speak slow. By the time my sentence is ready, the moment is gone.&lt;&lt;/thought&gt;&gt;
-&lt;&lt;speak 10&gt;&gt;
+&lt;&lt;speak 0&gt;&gt;
 &lt;&lt;bank &quot;yes, I, will, try, think, fast, speak, slow, but, sorry, dasu*&quot; &quot;nod&quot;&gt;&gt;
 &lt;&lt;when &quot;slow&quot; &quot;fast&quot;&gt;&gt;S4 Honest
 &lt;&lt;otherwise&gt;&gt;S4 Try
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="51" name="S4 Honest" tags="y2" position="1350,2025" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="55" name="S4 Honest" tags="y2" position="1600,2025" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;set $earlyQ to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The professor stops.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Oh. Would it help if I sent the discussion questions the night before?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Next week, the questions arrive the night before.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;Year 3&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="52" name="S4 Try" tags="y2" position="1350,2150" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;Year 3&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="56" name="S4 Try" tags="y2" position="1600,2150" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Professor&quot; &quot;blue&quot;&gt;&gt;“Great! See you Thursday.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;Year 3&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="53" name="Year 3" tags="y3 interlude" position="100,2800" size="100,100">&lt;div class=&quot;interlude&quot;&gt;
+&lt;&lt;proceed &quot;Year 3&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="57" name="Year 3" tags="y3 interlude" position="100,2800" size="100,100">&lt;div class=&quot;interlude&quot;&gt;
 &lt;p class=&quot;yearword&quot;&gt;Junior&lt;/p&gt;
 &lt;p class=&quot;yearsub&quot;&gt;The Compliment&lt;/p&gt;
 &lt;p&gt;Everything is in English now. Nothing you say is crossed out. You have every word. The only question is what you choose to say.&lt;/p&gt;
 &lt;&lt;if $earlyQ&gt;&gt;&lt;p&gt;The discussion questions still come the night before. You talk in seminar most weeks now.&lt;/p&gt;&lt;&lt;/if&gt;&gt;
-&lt;p&gt;It’s Teri’s birthday party.&lt;/p&gt;
+&lt;p&gt;Teri has been your closest friend since that first walk to Vesh Burger. Tonight is her birthday party.&lt;/p&gt;
 &lt;&lt;proceed &quot;J0&quot; &quot;Get ready&quot;&gt;&gt;
-&lt;/div&gt;</tw-passagedata><tw-passagedata pid="54" name="J0" tags="y3 card" position="350,2800" size="100,100">&lt;&lt;card &quot;J0&quot; &quot;The Text&quot;&gt;&gt;
+&lt;/div&gt;</tw-passagedata><tw-passagedata pid="58" name="J0" tags="y3 card" position="350,2800" size="100,100">&lt;&lt;card &quot;J0&quot; &quot;The Text&quot;&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Before the party, your phone buzzes. It’s Mom, in your first language.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;textreply &quot;J1&quot; &quot;Go to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="55" name="J1" tags="y3 card" position="600,2800" size="100,100">&lt;&lt;card &quot;J1&quot; &quot;So Good!&quot;&gt;&gt;
-&lt;&lt;narrate&gt;&gt;A friend of a friend named Greg starts chatting with you.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;textreply &quot;J1&quot; &quot;Go to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="59" name="J1" tags="y3 card" position="600,2800" size="100,100">&lt;&lt;card &quot;J1&quot; &quot;So Good!&quot;&gt;&gt;
+&lt;&lt;narrate&gt;&gt;Greg, a friend of Teri’s roommate you’ve only ever said hi to, starts chatting with you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Wait, I hear an accent! Your Velen is so good, though!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;thought &quot;plain&quot;&gt;&gt;Thanks. I’ve lived here three years. I take all my classes in Velen. I dream in it sometimes.&lt;&lt;/thought&gt;&gt;
 &lt;&lt;choose 0 &quot;What do you say?&quot;&gt;&gt;
 &lt;&lt;option &quot;“Oh, thank you!”&quot; &quot;&quot; &quot;thanks&quot;&gt;&gt;J1 Thanks
 &lt;&lt;option &quot;“I’ve had some practice.”&quot; &quot;with a smile&quot; &quot;practice&quot;&gt;&gt;J1 Practice
 &lt;&lt;option &quot;“Thanks. I’ve lived here three years, and I take all my classes in Velen.”&quot; &quot;&quot; &quot;years&quot;&gt;&gt;J1 Years
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="56" name="J1 Thanks" tags="y3" position="600,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Seriously, so good! Better than mine, ha.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="57" name="J1 Practice" tags="y3" position="600,3050" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Ha, clearly!”&lt;&lt;/line&gt;&gt;
-&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="58" name="J1 Years" tags="y3" position="600,3175" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Oh. Whoa. Okay, respect.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="60" name="J1 Thanks" tags="y3" position="600,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Seriously, so good! Better than mine, ha.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="61" name="J1 Practice" tags="y3" position="600,3050" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Ha, clearly!”&lt;&lt;/line&gt;&gt;
+&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="62" name="J1 Years" tags="y3" position="600,3175" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Oh. Whoa. Okay, respect.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The compliment lands differently now.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="59" name="J1 After" tags="" position="600,3300" size="100,100">&lt;&lt;narrate&gt;&gt;You notice you’ve flattened your accent a little, without deciding to.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="60" name="J2" tags="y3 card" position="850,2800" size="100,100">&lt;&lt;card &quot;J2&quot; &quot;Really From&quot;&gt;&gt;
+&lt;&lt;include &quot;J1 After&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="63" name="J1 After" tags="" position="600,3300" size="100,100">&lt;&lt;narrate&gt;&gt;You notice you’ve flattened your accent a little, without deciding to.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="64" name="J2" tags="y3 card" position="850,2800" size="100,100">&lt;&lt;card &quot;J2&quot; &quot;Really From&quot;&gt;&gt;
 &lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“So where are you from? Like, really from?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Teri is close enough to hear.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;thought &quot;plain&quot;&gt;&gt;I’m from @home. And I’m also from here now. Why is that the first thing you want to know?&lt;&lt;/thought&gt;&gt;
@@ -1788,20 +1838,40 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;option &quot;“@home.”&quot; &quot;&quot; &quot;home&quot;&gt;&gt;J2 Home
 &lt;&lt;option &quot;“Here, now. This is my third year.”&quot; &quot;&quot; &quot;here&quot;&gt;&gt;J2 Here
 &lt;&lt;option &quot;“Where are you really from?”&quot; &quot;with a smile&quot; &quot;back&quot;&gt;&gt;J2 Back
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="61" name="J2 Home" tags="y3" position="850,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Oh, cool! I’ve always wanted to go. Is it true that everyone there…”&lt;&lt;/line&gt;&gt;
-&lt;&lt;narrate&gt;&gt;He finishes the question with a stereotype.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="62" name="J2 Here" tags="y3" position="850,3050" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“No, but like, originally.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="63" name="J2 Back" tags="y3" position="850,3175" size="100,100">&lt;&lt;narrate&gt;&gt;A beat. Teri laughs, out loud, on your side.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="65" name="J2 Home" tags="y3" position="850,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Oh, cool! I’ve always wanted to go. Is it true that everyone there…”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;He finishes the question with a stereotype. Before you can decide whether to answer it, his friend walks up.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="66" name="J2 Here" tags="y3" position="850,3050" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“No, but like, originally.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You tell him: @home. He nods, like that settles it.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: It doesn’t settle anything.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="67" name="J2 Back" tags="y3" position="850,3175" size="100,100">&lt;&lt;narrate&gt;&gt;A beat. Teri laughs, out loud, on your side.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Ha. Okay. Fair.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="64" name="J3" tags="y3 card" position="1100,2800" size="100,100">&lt;&lt;card &quot;J3&quot; &quot;Slow and Loud&quot;&gt;&gt;
+&lt;&lt;proceed &quot;J3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="68" name="J3" tags="y3 card" position="1100,2800" size="100,100">&lt;&lt;card &quot;J3&quot; &quot;Slow and Loud&quot;&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Greg’s friend walks up. Greg introduces you, suddenly speaking very slowly and loudly.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“THIS… IS… MY… NEW… FRIEND. @THEY… @IS… FROM… &lt;&lt;= $home.toUpperCase()&gt;&gt;.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;thought &quot;plain&quot;&gt;&gt;I understand you perfectly. You were speaking normally to me five minutes ago.&lt;&lt;/thought&gt;&gt;
 &lt;&lt;choose 0 &quot;What do you do?&quot;&gt;&gt;
-&lt;&lt;option &quot;Laugh it off&quot; &quot;&quot; &quot;A&quot;&gt;&gt;J4
-&lt;&lt;option &quot;Keep talking at your normal speed, and let them notice&quot; &quot;&quot; &quot;B&quot;&gt;&gt;J4
-&lt;&lt;option &quot;“You can talk normal speed. I’ve got it.”&quot; &quot;smiling&quot; &quot;C&quot;&gt;&gt;J4
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="65" name="J4" tags="y3 card" position="1350,2800" size="100,100">&lt;&lt;card &quot;J4&quot; &quot;Overheard&quot;&gt;&gt;
+&lt;&lt;option &quot;Laugh it off&quot; &quot;&quot; &quot;A&quot;&gt;&gt;J3b
+&lt;&lt;option &quot;Keep talking at your normal speed, and let them notice&quot; &quot;&quot; &quot;B&quot;&gt;&gt;J3b
+&lt;&lt;option &quot;“You can talk normal speed. I’ve got it.”&quot; &quot;smiling&quot; &quot;C&quot;&gt;&gt;J3b
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="69" name="J3b" tags="y3 card" position="1350,2800" size="100,100">&lt;&lt;card &quot;J3b&quot; &quot;The First-Year&quot;&gt;&gt;
+&lt;&lt;narrate&gt;&gt;Near the snacks, a first-year stands at the edge of the group, smiling and nodding a second too long. You know that smile.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;Marcus&quot; &quot;blue&quot;&gt;&gt;“…and then he just walks into the lake. Brask, brask, BRASK!”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;Everyone laughs. The first-year laughs too, a beat late.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;thought &quot;plain&quot;&gt;&gt;I know exactly where you are right now.&lt;&lt;/thought&gt;&gt;
+&lt;&lt;choose 0 &quot;What do you do?&quot;&gt;&gt;
+&lt;&lt;option &quot;“Hi, I’m @name. ‘Brask’ just means awesome.”&quot; &quot;&quot; &quot;explain&quot;&gt;&gt;J3b Explain
+&lt;&lt;option &quot;Say it slowly, just for them: “Tu, lo… toli.”&quot; &quot;&quot; &quot;slow&quot;&gt;&gt;J3b Slow
+&lt;&lt;option &quot;“Marcus, tell it again. Slower.”&quot; &quot;&quot; &quot;again&quot;&gt;&gt;J3b Again
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="70" name="J3b Explain" tags="y3" position="1350,2925" size="100,100">&lt;&lt;narrate&gt;&gt;The first-year lets out a breath.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;First-year&quot; &quot;blue slow&quot;&gt;&gt;“Oh. Okay. Brask.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;They say it carefully, the way you once did. Then they ask where you’re from, and you both answer slowly, and it’s fine.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: Three years ago, this was me. Now I’m the one who knows the word.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J4&quot; &quot;Later&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="71" name="J3b Slow" tags="y3" position="1350,3050" size="100,100">&lt;&lt;narrate&gt;&gt;The first-year looks at you, then laughs. A real one this time.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;line &quot;First-year&quot; &quot;blue slow&quot;&gt;&gt;“Toli.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: Teri did this for me once.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J4&quot; &quot;Later&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="72" name="J3b Again" tags="y3" position="1350,3175" size="100,100">&lt;&lt;narrate&gt;&gt;Marcus rolls his eyes, grinning, and tells it again, slower. This time the first-year laughs at the right moment.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You think: I didn’t need a single word I didn’t have.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J4&quot; &quot;Later&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="73" name="J4" tags="y3 card" position="1600,2800" size="100,100">&lt;&lt;card &quot;J4&quot; &quot;Overheard&quot;&gt;&gt;
 &lt;&lt;set _v to $picks[&quot;J3&quot;]&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Late, on the way out. Behind you, Greg says to his friend:&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;if _v is &quot;A&quot;&gt;&gt;
@@ -1828,17 +1898,17 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;option &quot;“I’m right here, you know.”&quot; &quot;to Greg&quot; &quot;here&quot;&gt;&gt;J4 Here
 &lt;&lt;option &quot;“I’m not one of you, actually. I’m from @home too.”&quot; &quot;&quot; &quot;from&quot;&gt;&gt;J4 From
 &lt;&lt;silence&gt;&gt;J4 Silent
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="66" name="J4 Quiet" tags="y3" position="1350,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Sorry, Teri.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="74" name="J4 Quiet" tags="y3" position="1600,2925" size="100,100">&lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Sorry, Teri.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: He apologized to her.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="67" name="J4 Okay" tags="y3" position="1350,3050" size="100,100">&lt;&lt;line &quot;Teri&quot; &quot;blue&quot;&gt;&gt;“It’s not okay?”&lt;&lt;/line&gt;&gt;
+&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="75" name="J4 Okay" tags="y3" position="1600,3050" size="100,100">&lt;&lt;line &quot;Teri&quot; &quot;blue&quot;&gt;&gt;“It’s not okay?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;She sounds stung. She drops it, but her jaw stays tight.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="68" name="J4 Here" tags="y3" position="1350,3175" size="100,100">&lt;&lt;narrate&gt;&gt;Greg turns to you for the first time.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="76" name="J4 Here" tags="y3" position="1600,3175" size="100,100">&lt;&lt;narrate&gt;&gt;Greg turns to you for the first time.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Greg&quot; &quot;blue&quot;&gt;&gt;“Yeah. Sorry. That was weird of me.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="69" name="J4 From" tags="y3" position="1350,3300" size="100,100">&lt;&lt;narrate&gt;&gt;Teri blinks.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="77" name="J4 From" tags="y3" position="1600,3300" size="100,100">&lt;&lt;narrate&gt;&gt;Teri blinks.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Teri&quot; &quot;blue&quot;&gt;&gt;“I meant it as a compliment.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;“I know.”&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="70" name="J4 Silent" tags="y3" position="1350,3425" size="100,100">&lt;&lt;narrate&gt;&gt;Teri has already pulled you toward the stairs. The moment ended before you picked a side of it.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="71" name="J-End" tags="y3 card" position="1600,2800" size="100,100">&lt;&lt;card &quot;J-End&quot; &quot;The Walk Home&quot;&gt;&gt;
+&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="78" name="J4 Silent" tags="y3" position="1600,3425" size="100,100">&lt;&lt;narrate&gt;&gt;Teri has already pulled you toward the stairs. The moment ended before you picked a side of it.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;J-End&quot; &quot;Walk home&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="79" name="J-End" tags="y3 card" position="1850,2800" size="100,100">&lt;&lt;card &quot;J-End&quot; &quot;The Walk Home&quot;&gt;&gt;
 &lt;&lt;set _p to $picks[&quot;J4&quot;]&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The street is quiet.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Teri&quot; &quot;blue&quot;&gt;&gt;“Sorry if that was a lot. He just bugs me.”&lt;&lt;/line&gt;&gt;
@@ -1859,18 +1929,17 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;line &quot;Teri&quot;&gt;&gt;“So velmar.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You know exactly what it means: the feeling of walking home late with friends, when nobody needs to say anything. There is no word for it in your first language. Tonight it isn’t perfectly true, but it’s still the word you want.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;learn &quot;velmar&quot; &quot;walking home late with friends, when nobody needs to say anything&quot;&gt;&gt;
-&lt;&lt;proceed &quot;Year 4&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="72" name="Year 4" tags="y4 interlude" position="100,3700" size="100,100">&lt;div class=&quot;interlude&quot;&gt;
+&lt;&lt;proceed &quot;Year 4&quot; &quot;Next year&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="80" name="Year 4" tags="y4 interlude" position="100,3700" size="100,100">&lt;div class=&quot;interlude&quot;&gt;
 &lt;p class=&quot;yearword&quot;&gt;Senior&lt;/p&gt;
 &lt;p class=&quot;yearsub&quot;&gt;Coming Home&lt;/p&gt;
-&lt;p&gt;Winter break of your last year. You’re home in @home, and everyone speaks your first language, shown in plain English. You should understand every word. So should they.&lt;/p&gt;
+&lt;p&gt;Winter break of your last year. You’re home in Ostra, and everyone speaks your first language, shown in plain English. You should understand every word. So should they.&lt;/p&gt;
 &lt;&lt;proceed &quot;H1&quot; &quot;Land&quot;&gt;&gt;
-&lt;/div&gt;</tw-passagedata><tw-passagedata pid="73" name="H1" tags="y4 card" position="350,3700" size="100,100">&lt;&lt;card &quot;H1&quot; &quot;The Airport&quot;&gt;&gt;
+&lt;/div&gt;</tw-passagedata><tw-passagedata pid="81" name="H1" tags="y4 card" position="350,3700" size="100,100">&lt;&lt;card &quot;H1&quot; &quot;The Airport&quot;&gt;&gt;
 &lt;&lt;line &quot;Mom&quot;&gt;&gt;“Look at you! How was the flight? Are you hungry?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;thought &quot;plain&quot;&gt;&gt;The flight was long. I’m starving. I missed you.&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 0&gt;&gt;
 &lt;&lt;bank &quot;the, flight, was, long, so, I’m, starving, tired, hungry, I, missed, you, Mom, good&quot; &quot;hug her&quot;&gt;&gt;
 &lt;&lt;otherwise&gt;&gt;H1 Reply
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="74" name="H1 Reply" tags="y4" position="350,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="82" name="H1 Reply" tags="y4" position="350,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;if setup.saidHas(&quot;hug her&quot;)&gt;&gt;&lt;&lt;narrate&gt;&gt;She hugs you back, hard, and doesn’t let go right away.&lt;&lt;/narrate&gt;&gt;&lt;&lt;/if&gt;&gt;
 &lt;&lt;reply &quot;Mom&quot;&gt;&gt;
 &lt;&lt;to &quot;missed&quot;&gt;&gt;I missed you too. So much.
@@ -1880,7 +1949,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;toelse&gt;&gt;Look at you. Come on, let’s get you home.
 &lt;&lt;/reply&gt;&gt;
 &lt;&lt;narrate&gt;&gt;For the first time in a long time, you don’t have to think about how to say anything.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;A week later&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="75" name="H2" tags="y4 card" position="600,3700" size="100,100">&lt;&lt;card &quot;H2&quot; &quot;The Gathering&quot;&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;A week later&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="83" name="H2" tags="y4 card" position="600,3700" size="100,100">&lt;&lt;card &quot;H2&quot; &quot;The Gathering&quot;&gt;&gt;
 &lt;&lt;if $talked.grandma and $talked.uncle and $talked.cousin&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You’ve talked to everyone. The evening is winding down.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;elseif $talked.grandma or $talked.uncle or $talked.cousin&gt;&gt;
@@ -1894,7 +1963,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;option &quot;Your uncle&quot; &quot;by the TV&quot; &quot;uncle&quot; `!$talked.uncle`&gt;&gt;HU1
 &lt;&lt;option &quot;Your cousin and their friends&quot; &quot;on the couch&quot; &quot;cousin&quot; `!$talked.cousin`&gt;&gt;HC1
 &lt;&lt;option &quot;Step away from everyone&quot; &quot;go to the kitchen&quot; &quot;leave&quot;&gt;&gt;H Walk Away
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="76" name="HG1" tags="y4 card" position="850,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="84" name="HG1" tags="y4 card" position="850,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
 &lt;&lt;set $talked.grandma to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;She hands you a plate before you can say hello. It’s the dish you missed all through freshman year. It tastes like something again.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“Is it good? Is it like before?”&lt;&lt;/line&gt;&gt;
@@ -1902,7 +1971,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;speak 0 &quot;leave:H Walk Away&quot;&gt;&gt;
 &lt;&lt;bank &quot;yes, it’s, exactly, like, before, so, good, Grandma&quot; &quot;smile&quot;&gt;&gt;
 &lt;&lt;otherwise&gt;&gt;HG2
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="77" name="HG2" tags="y4 card" position="1100,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="85" name="HG2" tags="y4 card" position="1100,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
 &lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“Good. You’re too thin.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“And your friends there? What do you do together?”&lt;&lt;/line&gt;&gt;
@@ -1912,15 +1981,16 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;when &quot;velmar&quot;&gt;&gt;HG2 Velmar
 &lt;&lt;atleast 5&gt;&gt;HG2 Lot
 &lt;&lt;otherwise&gt;&gt;HG2 Little
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="78" name="HG2 Velmar" tags="y4" position="1100,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="86" name="HG2 Velmar" tags="y4" position="1100,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Grandma tilts her head.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“Vel… what’s that?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="79" name="HG2 Lot" tags="y4" position="1100,3950" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;narrate&gt;&gt;You start to explain, and get as far as “It’s when…”&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="87" name="HG2 Lot" tags="y4" position="1100,3950" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“That’s nice.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;It is not what you meant.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="80" name="HG2 Little" tags="y4" position="1100,4075" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="88" name="HG2 Little" tags="y4" position="1100,4075" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“You have friends. Good.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="81" name="HG3" tags="y4 card" position="1350,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
+&lt;&lt;proceed &quot;HG3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="89" name="HG3" tags="y4 card" position="1350,3700" size="100,100">&lt;&lt;card &quot;HG&quot; &quot;Grandma&quot;&gt;&gt;
 &lt;&lt;set $uncleJab to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Your uncle leans in from the hallway, grinning.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Listen to @them! Four years over there and @theyre practically a foreigner.”&lt;&lt;/line&gt;&gt;
@@ -1932,15 +2002,15 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;option &quot;“I’m not a foreigner, Uncle.”&quot; &quot;&quot; &quot;push&quot;&gt;&gt;HG3 Push
 &lt;&lt;option &quot;Turn back to Grandma&quot; &quot;&quot; &quot;turn&quot;&gt;&gt;HG3 Turn
 &lt;&lt;silence&gt;&gt;HG3 Silent
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="82" name="HG3 Laugh" tags="y4" position="1350,3825" size="100,100">&lt;&lt;narrate&gt;&gt;He wanders off, pleased with himself.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="83" name="HG3 Push" tags="y4" position="1350,3950" size="100,100">&lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Okay, okay, Professor.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="90" name="HG3 Laugh" tags="y4" position="1350,3825" size="100,100">&lt;&lt;narrate&gt;&gt;He wanders off, pleased with himself.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="91" name="HG3 Push" tags="y4" position="1350,3950" size="100,100">&lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Okay, okay, Professor.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He holds up his hands and wanders off.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="84" name="HG3 Turn" tags="y4" position="1350,4075" size="100,100">&lt;&lt;narrate&gt;&gt;You turn your back to him, just a little. Grandma notices, and smiles.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="85" name="HG3 Silent" tags="y4" position="1350,4200" size="100,100">&lt;&lt;narrate&gt;&gt;He’s already gone, laughing at something else.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="86" name="HG End" tags="" position="1350,4325" size="100,100">&lt;&lt;narrate&gt;&gt;Grandma pats your hand.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="92" name="HG3 Turn" tags="y4" position="1350,4075" size="100,100">&lt;&lt;narrate&gt;&gt;You turn your back to him, just a little. Grandma notices, and smiles.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="93" name="HG3 Silent" tags="y4" position="1350,4200" size="100,100">&lt;&lt;narrate&gt;&gt;He’s already gone, laughing at something else.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;include &quot;HG End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="94" name="HG End" tags="" position="1350,4325" size="100,100">&lt;&lt;narrate&gt;&gt;Grandma pats your hand.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Grandma&quot;&gt;&gt;“You’ll find the words.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: I found them. They’re just not here.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="87" name="HU1" tags="y4 card" position="1600,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="95" name="HU1" tags="y4 card" position="1600,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
 &lt;&lt;set $talked.uncle to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Your uncle mutes the TV, which means he wants something.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“So what do you actually do there? What’s a normal day?”&lt;&lt;/line&gt;&gt;
@@ -1951,20 +2021,20 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;atleast 6&gt;&gt;HU1 Lot
 &lt;&lt;atleast 1&gt;&gt;HU1 Little
 &lt;&lt;silence&gt;&gt;HU1 Nothing
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="88" name="HU1 Velen" tags="y4" position="1600,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="96" name="HU1 Velen" tags="y4" position="1600,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He squints at you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Korsel? Ofi-what?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He laughs, half proud, half lost.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="89" name="HU1 Lot" tags="y4" position="1600,3950" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="97" name="HU1 Lot" tags="y4" position="1600,3950" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Sounds hard.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Close. But it sounds like a smaller life than the one I have.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="90" name="HU1 Little" tags="y4" position="1600,4075" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="98" name="HU1 Little" tags="y4" position="1600,4075" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Like high school!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Well, it’s not quite like high school. Very different, actually.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="91" name="HU1 Nothing" tags="y4" position="1600,4200" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="99" name="HU1 Nothing" tags="y4" position="1600,4200" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Busy, huh? Too busy to call your mother!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He laughs at his own joke.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="92" name="HU2" tags="y4 card" position="1850,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
+&lt;&lt;proceed &quot;HU2&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="100" name="HU2" tags="y4 card" position="1850,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“And after? What are you going to do with all that?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;thought &quot;blue&quot;&gt;&gt;My advisor wants me to stay for the research program. Two more years. I haven’t told Mom.&lt;&lt;/thought&gt;&gt;
 &lt;&lt;speak 10 &quot;leave:H Walk Away&quot;&gt;&gt;
@@ -1974,19 +2044,19 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;when &quot;stay&quot;&gt;&gt;HU2 Stay
 &lt;&lt;when &quot;come&quot; &quot;home&quot;&gt;&gt;HU2 Home
 &lt;&lt;otherwise&gt;&gt;HU2 Vague
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="93" name="HU2 Stay" tags="y4" position="1850,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="101" name="HU2 Stay" tags="y4" position="1850,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He glances toward the kitchen, then back at you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Stay? Does your mother know that?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Not yet.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="94" name="HU2 Home" tags="y4" position="1850,3950" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="102" name="HU2 Home" tags="y4" position="1850,3950" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Good! Come home, get a real job.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: I don’t know if I meant it.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="95" name="HU2 NoHome" tags="y4" position="1850,4075" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="103" name="HU2 NoHome" tags="y4" position="1850,4075" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Not coming home? Does your mother know that?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: Not yet.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="96" name="HU2 Vague" tags="y4" position="1850,4200" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="104" name="HU2 Vague" tags="y4" position="1850,4200" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Well. Figure it out before your mother asks.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="97" name="HU3" tags="y4 card" position="2100,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
+&lt;&lt;proceed &quot;HU3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="105" name="HU3" tags="y4 card" position="2100,3700" size="100,100">&lt;&lt;card &quot;HU&quot; &quot;Your Uncle&quot;&gt;&gt;
 &lt;&lt;set $uncleJab to true&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“You know what? You sound foreign now. Your accent’s gone all funny.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;thought &quot;blue&quot;&gt;&gt;I don’t sound foreign. I sound like who I am now.&lt;&lt;/thought&gt;&gt;
@@ -1996,16 +2066,16 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;when &quot;laugh it off&quot;&gt;&gt;HU3 Laugh
 &lt;&lt;silence&gt;&gt;HU3 Silent
 &lt;&lt;otherwise&gt;&gt;HU3 Other
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="98" name="HU3 Nem" tags="y4" position="2100,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="106" name="HU3 Nem" tags="y4" position="2100,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“See? You just did it again!”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He laughs loud enough for the whole room to hear.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="99" name="HU3 Laugh" tags="y4" position="2100,3950" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="107" name="HU3 Laugh" tags="y4" position="2100,3950" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;“Ha, yeah, I know.” He unmutes the TV.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="100" name="HU3 Silent" tags="y4" position="2100,4075" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="108" name="HU3 Silent" tags="y4" position="2100,4075" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He shrugs and unmutes the TV.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="101" name="HU3 Other" tags="y4" position="2100,4200" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="109" name="HU3 Other" tags="y4" position="2100,4200" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;He raises an eyebrow and unmutes the TV.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="102" name="HC1" tags="y4 card" position="2350,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="110" name="HC1" tags="y4 card" position="2350,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
 &lt;&lt;set $talked.cousin to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You squeeze onto the couch. One of your cousin’s friends tells a story with their hands, and everyone explodes laughing.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Everyone&quot;&gt;&gt;“That’s so &lt;b&gt;glint&lt;/b&gt;!”&lt;&lt;/line&gt;&gt;
@@ -2017,41 +2087,40 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;when &quot;laugh&quot;&gt;&gt;HC1 Laugh
 &lt;&lt;silence&gt;&gt;HC1 Silent
 &lt;&lt;otherwise&gt;&gt;HC1 Try
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="103" name="HC1 Ask" tags="y4" position="2350,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="111" name="HC1 Ask" tags="y4" position="2350,3825" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Oh my god. You’ve been gone way too long.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Everyone laughs.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="104" name="HC1 Laugh" tags="y4" position="2350,3950" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="112" name="HC1 Laugh" tags="y4" position="2350,3950" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Nobody notices. You laugh a second too long.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="105" name="HC1 Try" tags="y4" position="2350,4075" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="113" name="HC1 Try" tags="y4" position="2350,4075" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;A pause.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“…Nobody says it like that.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="106" name="HC1 Silent" tags="y4" position="2350,4200" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="114" name="HC1 Silent" tags="y4" position="2350,4200" size="100,100">&lt;&lt;said&gt;&gt;
 &lt;&lt;narrate&gt;&gt;The laughter fades. The conversation moves on without you.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="107" name="HC2" tags="y4 card" position="2600,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
+&lt;&lt;proceed &quot;HC2&quot; &quot;Stay on the couch&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="115" name="HC2" tags="y4 card" position="2600,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Later, the friends drift to their phones. Your cousin pulls their knees up and looks at you.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Do you even like coming back?”&lt;&lt;/line&gt;&gt;
-&lt;&lt;thought &quot;blue&quot;&gt;&gt;I do. But every time I come back, less of me fits.&lt;&lt;/thought&gt;&gt;
 &lt;&lt;choose 10 &quot;What do you say?&quot; &quot;leave:H Walk Away&quot;&gt;&gt;
 &lt;&lt;option &quot;“Of course I do.”&quot; &quot;&quot; &quot;course&quot;&gt;&gt;HC2 Course
 &lt;&lt;option &quot;“It’s… different now.”&quot; &quot;&quot; &quot;different&quot;&gt;&gt;HC2 Different
 &lt;&lt;option &quot;“Do you ever think about leaving?”&quot; &quot;&quot; &quot;ask&quot;&gt;&gt;HC2 Ask
 &lt;&lt;silence&gt;&gt;HC2 Silent
-&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="108" name="HC2 Course" tags="y4" position="2600,3825" size="100,100">&lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Okay.”&lt;&lt;/line&gt;&gt;
+&lt;&lt;/choose&gt;&gt;</tw-passagedata><tw-passagedata pid="116" name="HC2 Course" tags="y4" position="2600,3825" size="100,100">&lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Okay.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;They don’t sound convinced.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="109" name="HC2 Different" tags="y4" position="2600,3950" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin nods slowly.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="117" name="HC2 Different" tags="y4" position="2600,3950" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin nods slowly.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Yeah. You’re different now.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;It isn’t an insult. It isn’t quite a compliment.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="110" name="HC2 Ask" tags="y4" position="2600,4075" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin laughs, then doesn’t.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="118" name="HC2 Ask" tags="y4" position="2600,4075" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin laughs, then doesn’t.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“Sometimes.”&lt;&lt;/line&gt;&gt;
-&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="111" name="HC2 Silent" tags="y4" position="2600,4200" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin waits, then goes back to their phone.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="112" name="HC3" tags="y4 card" position="2850,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
+&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="119" name="HC2 Silent" tags="y4" position="2600,4200" size="100,100">&lt;&lt;narrate&gt;&gt;Your cousin waits, then goes back to their phone.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;HC3&quot; &quot;Keep talking&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="120" name="HC3" tags="y4 card" position="2850,3700" size="100,100">&lt;&lt;card &quot;HC&quot; &quot;Your Cousin&quot;&gt;&gt;
 &lt;&lt;set $uncleJab to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Your uncle walks past with a plate.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot;&gt;&gt;“Careful, kid. Your cousin sounds like a foreigner now. Next thing you know, you’ll need a translator.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Your cousin rolls their eyes.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Cousin&quot;&gt;&gt;“He says that every year about someone.”&lt;&lt;/line&gt;&gt;
 &lt;&lt;narrate&gt;&gt;You think: This year it’s me.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="113" name="H Walk Away" tags="y4" position="2850,3825" size="100,100">&lt;&lt;narrate&gt;&gt;You set your plate down and slip out of the room.&lt;&lt;/narrate&gt;&gt;
+&lt;&lt;proceed &quot;H2&quot; &quot;Back to the party&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="121" name="H Walk Away" tags="y4" position="2850,3825" size="100,100">&lt;&lt;narrate&gt;&gt;You set your plate down and slip out of the room.&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;if $uncleJab&gt;&gt;
 &lt;&lt;line &quot;Uncle&quot; &quot;faded&quot;&gt;&gt;“Leaving already? Too foreign for us now?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;else&gt;&gt;
@@ -2059,7 +2128,7 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;/if&gt;&gt;
 &lt;&lt;set $uncleJab to true&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Laughter behind you. The kitchen is quiet. Someone left the light on.&lt;&lt;/narrate&gt;&gt;
-&lt;&lt;proceed &quot;H5&quot; &quot;Go to the kitchen&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="114" name="H5" tags="y4 card" position="3100,3700" size="100,100">&lt;&lt;card &quot;H5&quot; &quot;The Kitchen&quot;&gt;&gt;
+&lt;&lt;proceed &quot;H5&quot; &quot;Go to the kitchen&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="122" name="H5" tags="y4 card" position="3100,3700" size="100,100">&lt;&lt;card &quot;H5&quot; &quot;The Kitchen&quot;&gt;&gt;
 &lt;&lt;narrate&gt;&gt;Later, after everyone has gone home, Mom is drying dishes. She asks without looking up:&lt;&lt;/narrate&gt;&gt;
 &lt;&lt;line &quot;Mom&quot;&gt;&gt;“Are you happy there?”&lt;&lt;/line&gt;&gt;
 &lt;&lt;line &quot;You&quot; &quot;still&quot;&gt;&gt;…&lt;&lt;/line&gt;&gt;
@@ -2067,8 +2136,8 @@ html.endscreen #story { margin-left: 0; }
 &lt;&lt;speak 10&gt;&gt;
 &lt;&lt;bank &quot;yes, no, I, am, I’m, happy, here, there, both, and, but, not, sometimes, really, maybe, I don’t know, I think so, miss, you, home, it’s, hard, belong, anymore, Mom, ?, !, …&quot; &quot;&quot;&gt;&gt;
 &lt;&lt;otherwise&gt;&gt;H-End
-&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="115" name="H-End" tags="y4 ending" position="3100,3825" size="100,100">&lt;&lt;said&gt;&gt;
-&lt;&lt;finale &quot;The End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="116" name="The End" tags="endscreen" position="3350,3700" size="100,100">&lt;div class=&quot;endtitle&quot;&gt;
+&lt;&lt;/speak&gt;&gt;</tw-passagedata><tw-passagedata pid="123" name="H-End" tags="y4 ending" position="3100,3825" size="100,100">&lt;&lt;said&gt;&gt;
+&lt;&lt;finale &quot;The End&quot;&gt;&gt;</tw-passagedata><tw-passagedata pid="124" name="The End" tags="endscreen" position="3350,3700" size="100,100">&lt;div class=&quot;endtitle&quot;&gt;
 &lt;h1&gt;What I Meant to Say&lt;/h1&gt;
 &lt;span class=&quot;again&quot;&gt;&lt;&lt;link &quot;Play again&quot;&gt;&gt;&lt;&lt;run Engine.restart()&gt;&gt;&lt;&lt;/link&gt;&gt;&lt;/span&gt;
 &lt;/div&gt;</tw-passagedata></tw-storydata>
